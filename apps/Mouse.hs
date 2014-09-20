@@ -6,7 +6,7 @@ import           Data.IORef
 import           Graphics.XHB.Connection (connect)
 import           System.Environment
 import           System.IO
-import           Test.Robot
+import           Test.Robot hiding (connect)
 import           Text.Show.Pretty (ppShow)
 
 import           Hemokit
@@ -35,7 +35,7 @@ main = do
       (x, y) <- readIORef xy
       print (x, y)
       writeIORef xy (0, 0)
-      runRobotWithConnection (moveBy ((-x) `quot` 10) (y `quot` 10)) xc
+      runRobotWith xc (moveBy ((-x) `quot` 10) (y `quot` 10))
       threadDelay 10000
 
   void $ untilNothing (readEmotiv device) $ \(state, _) -> do
