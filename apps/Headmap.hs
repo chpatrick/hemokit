@@ -4,7 +4,7 @@ module Main where
 
 import Control.Concurrent
 import Control.Monad
-import Data.Vector ((!))
+import Data.Vector.Unboxed ((!))
 -- import Data.IORef
 -- import qualified Data.Vector as V
 import Graphics.Rendering.Cairo

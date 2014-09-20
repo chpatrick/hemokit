@@ -20,7 +20,7 @@ import           Data.List
 import           Data.List.Split (splitOn)
 import           Data.Time.Clock
 import           Data.Monoid
-import qualified Data.Vector as V
+import qualified Data.Vector.Unboxed as V
 import           Options.Applicative hiding (action)
 import           System.IO
 import           Text.Read
@@ -130,8 +130,8 @@ whitespaceFormat EmotivState{ counter, battery, gyroX, gyroY, sensors, qualities
 -- | Formats all sensor values as 16 bit ints (big endian) into a `ByteString`.
 sensorBytesFormat :: EmotivState -> BSL.ByteString
 sensorBytesFormat EmotivState{ sensors }
-  = Builder.toLazyByteString . V.foldl1' (<>)
-    . V.map (Builder.word16BE . fromIntegral) $ sensors
+  = Builder.toLazyByteString . mconcat
+    . map (Builder.word16BE . fromIntegral) $ V.toList sensors
 
 
 main :: IO ()

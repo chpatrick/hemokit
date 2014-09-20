@@ -68,8 +68,8 @@ import           Data.Data
 import           Data.IORef
 import           Data.List
 import           Data.Ord (comparing)
-import           Data.Vector (Vector)
-import qualified Data.Vector as V
+import           Data.Vector.Unboxed (Vector)
+import qualified Data.Vector.Unboxed as V
 import           Data.Word
 import           Data.ByteString as BS (ByteString, index)
 import qualified Data.ByteString as BS
