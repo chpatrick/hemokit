@@ -36,6 +36,9 @@ module Hemokit
   , Sensor (..)
   , allSensors
 
+  -- * Encrypted raw data
+  , decrypt, serialToAES
+
   -- * Dealing with (decrypted) raw data
   , EmotivRawData (..)
   , readEmotivRaw
@@ -43,14 +46,7 @@ module Hemokit
   , parsePacket
   , updateEmotivState
 
-  -- * Encrypted raw data
-  , decrypt
-
   -- * Internals
-  , BitMask (..)
-  , getSensorMask
-  , qualityMask
-  , getLevel
   , batteryValue
   , qualitySensorFromByte0
 
@@ -62,18 +58,21 @@ import           Control.Applicative
 import           Control.DeepSeq.Generics
 import           Control.Exception
 import           Crypto.Cipher.AES
-import           Data.Bits ((.|.), (.&.), shiftL, shiftR)
-import           Data.Char
+import           Data.Binary.Get (runGet)
+import           Data.Binary.Bits.Get
+import           Data.Bits
 import           Data.Data
 import           Data.IORef
 import           Data.List
 import           Data.Ord (comparing)
+import           Data.Traversable (sequenceA)
 import           Data.Vector.Unboxed (Vector)
 import qualified Data.Vector.Unboxed as V
 import           Data.Word
-import           Data.ByteString as BS (ByteString, index)
+import           Data.ByteString as BS (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
+import           Data.ByteString.Lazy (fromStrict)
 import           GHC.Generics (Generic)
 import qualified System.HIDAPI as HID
 import           System.HIDAPI (DeviceInfo (..))
@@ -101,24 +100,22 @@ makeSerialNumber b | BS.length b == 16 = Just $ SerialNumber b
 makeSerialNumberFromString :: String -> Maybe SerialNumber
 makeSerialNumberFromString = makeSerialNumber . BS8.pack
 
+-- | Initialize an AES decrypter from a serial number.
+serialToAES :: EmotivModel -> SerialNumber -> AES
+serialToAES model (SerialNumber num)
+  = initAES $ BS.pack $ start ++ middle ++ end
+    where
+      sn = BS.index num
+      start = [ sn 15, 0, sn 14 ]
+      middle = case model of
+        Consumer ->  [ 0x54, sn 13, 0x10, sn 12, 0x42, sn 15, 0x00, sn 14, 0x48 ]
+        Developer -> [ 0x48,  0x0f, 0x00, sn 14, 0x54, sn 13, 0x10, sn 12, 0x42 ]
+      end = [ sn 13, 0, sn 12, 0x50 ]
 
 -- | Takes a 32 bytes encrypted EEG data, returns 32 bytes decrypted EEG data.
-decrypt :: SerialNumber -> EmotivModel -> ByteString -> EmotivRawData
-decrypt (SerialNumber num) typ encrypted32bytes = makeEmotivRawData decrypted32bytes
-  where
-    decrypted32bytes = BS.concat [decryptECB key left, decryptECB key right]
-
-    (left, right) = BS.splitAt 16 encrypted32bytes
-    sn x | x >= 0    = index num x
-         | otherwise = sn (BS.length num + x)
-    c = fromIntegral . ord
-    key = initAES . BS.pack $ start ++ middle ++ end
-
-    start =        [ sn (-1), 0, sn (-2)]
-    middle = case typ of
-      Consumer ->  [ c 'T', sn (-3), 0x10, sn (-4), c 'B', sn (-1), 0   , sn (-2), c 'H']
-      Developer -> [ c 'H', sn (-1), 0   , sn (-2), c 'T', sn (-3), 0x10, sn (-4), c 'B']
-    end =          [ sn (-3), 0, sn (-4), c 'P']
+decrypt :: AES -> ByteString -> EmotivRawData
+decrypt aes encrypted32bytes
+  = makeEmotivRawData $ decryptECB aes encrypted32bytes
 
 -- | The sensors of an Emotiv EPOC.
 -- Uses the names from the International 10-20 system.
@@ -142,47 +139,6 @@ data Sensor
 -- | Contains all `Sensor`s.
 allSensors :: [Sensor]
 allSensors = [minBound .. maxBound]
-
-
--- | Describes the indices of bits to make up a certain value.
-newtype BitMask = BitMask [Word8] deriving (Eq, Ord, Show)
-
--- | Describes which bits in a raw data packet make up the given sensor.
-getSensorMask :: Sensor -> BitMask
-getSensorMask s = BitMask $ case s of
-  F3  -> [10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7]
-  FC5 -> [28, 29, 30, 31, 16, 17, 18, 19, 20, 21, 22, 23, 8, 9]
-  AF3 -> [46, 47, 32, 33, 34, 35, 36, 37, 38, 39, 24, 25, 26, 27]
-  F7  -> [48, 49, 50, 51, 52, 53, 54, 55, 40, 41, 42, 43, 44, 45]
-  T7  -> [66, 67, 68, 69, 70, 71, 56, 57, 58, 59, 60, 61, 62, 63]
-  P7  -> [84, 85, 86, 87, 72, 73, 74, 75, 76, 77, 78, 79, 64, 65]
-  O1  -> [102, 103, 88, 89, 90, 91, 92, 93, 94, 95, 80, 81, 82, 83]
-  O2  -> [140, 141, 142, 143, 128, 129, 130, 131, 132, 133, 134, 135, 120, 121]
-  P8  -> [158, 159, 144, 145, 146, 147, 148, 149, 150, 151, 136, 137, 138, 139]
-  T8  -> [160, 161, 162, 163, 164, 165, 166, 167, 152, 153, 154, 155, 156, 157]
-  F8  -> [178, 179, 180, 181, 182, 183, 168, 169, 170, 171, 172, 173, 174, 175]
-  AF4 -> [196, 197, 198, 199, 184, 185, 186, 187, 188, 189, 190, 191, 176, 177]
-  FC6 -> [214, 215, 200, 201, 202, 203, 204, 205, 206, 207, 192, 193, 194, 195]
-  F4  -> [216, 217, 218, 219, 220, 221, 222, 223, 208, 209, 210, 211, 212, 213]
-
--- | Describes which bits in a raw data packat make up a sensor quality value.
-qualityMask :: BitMask
-qualityMask = BitMask [99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112]
-
-
--- | Extracts the sensor value for the given sensor from Emotiv raw data.
-getLevel :: EmotivRawData -> BitMask -> Int
-getLevel (EmotivRawData bytes32) (BitMask sensorBits) = foldr f 0 sensorBits
-  where
-    f :: Word8 -> Int -> Int
-    f bitNo level = (level `shiftL` 1) .|. int (bitAt b o)
-      where
-        b = (bitNo `shiftR` 3) + 1 :: Word8 -- div by 8 to get byte number, skip first byte (counter)
-        o = bitNo .&. 7            :: Word8 -- mod by 8 to get bit offset
-
-    bitAt :: Word8 -> Word8 -> Word8
-    bitAt byte bitOffset = ((bytes32 `index` int byte) `shiftR` int bitOffset) .&. 1
-
 
 -- | `fromIntegral` shortcut.
 int :: (Integral a) => a -> Int
@@ -298,26 +254,34 @@ makeEmotivRawData bytes
   | BS.length bytes /= 32 = error "Emotiv raw data must be 32 bytes"
   | otherwise             = EmotivRawData bytes
 
-
 -- I improved the gyro like this:
 -- https://github.com/openyou/emokit/commit/b023a3c195410147dae44a3ce3a6d72f7c16e441
 
--- | Parses an `EmotivPacket` from raw bytes.
 parsePacket :: EmotivRawData -> EmotivPacket
-parsePacket raw@(EmotivRawData bytes32) = EmotivPacket
-  { packetCounter = if is128c then 128                       else fromIntegral byte0
-  , packetBattery = if is128c then Just (batteryValue byte0) else Nothing
-  , packetGyroX   = ((int (byte 29) `shiftL` 4) .|. int (byte 31 `shiftR` 4)) - 1652 -- TODO check this hardcoding
-  , packetGyroY   = ((int (byte 30) `shiftL` 4) .|. int (byte 31   .&. 0x0F)) - 1681
-  , packetSensors = V.fromList [ getLevel raw (getSensorMask s) | s <- allSensors ]
-  , packetQuality = (, getLevel raw qualityMask) <$> qualitySensorFromByte0 byte0
-  }
-  where
-    byte0  = byte 0
-    byte n = bytes32 `index` n
-    is128c = byte0 .&. 128 /= 0 -- Is it the packet which would be sequence no 128?
-                                -- If so, then byte0 is the battery value.
-
+parsePacket (EmotivRawData bytes32)
+  = runGet packetParser $ fromStrict bytes32
+    where 
+      parse7levels = sequenceA . replicate 7 $ word16be 14
+      packetParser = runBitGet . block $
+        buildPacket <$>
+          bool <*> -- counter or battery indicator
+          word8 7 <*> -- counter or battery value
+          parse7levels <*> -- first seven levels
+          word32be 28 <*> -- quality
+          parse7levels <*> -- next seven levels
+          word16be 8 <*> -- top 8 bits of gyro X
+          word16be 8 <*> -- top 8 bits of gyro Y
+          word16be 4 <*> -- bottom 4 bits of gyro X
+          word16be 4     -- bottom 4 bits of gyro Y
+      buildPacket isBattery batteryCounter s1 q s2 hx hy lx ly
+        = EmotivPacket
+          { packetCounter = if isBattery then 128 else int batteryCounter
+          , packetBattery = if isBattery then Just (batteryValue batteryCounter) else Nothing
+          , packetGyroX = int (hx `shiftL` 4 .|. lx) - 1652 -- TODO check this hardcoding
+          , packetGyroY = int (hy `shiftL` 4 .|. ly) - 1681
+          , packetSensors = V.fromListN 14 $ map int (s1 ++ s2)
+          , packetQuality = ( , 0 ) <$> qualitySensorFromByte0 batteryCounter -- TODO: figure out quality
+          }
 
 -- | The USB vendor ID of the Emotiv EPOC.
 _EMOTIV_VENDOR_ID :: HID.VendorID
@@ -363,8 +327,7 @@ data EmotivRawDevice
 -- Also contains the cumulative `EmotivState` of the EEG.
 data EmotivDevice = EmotivDevice
   { rawDevice    :: EmotivRawDevice           -- ^ Where we get our data from, some form of "open handle".
-  , serial       :: SerialNumber              -- ^ The EEG's serial.
-  , emotivModel  :: EmotivModel               -- ^ Whether the EEG is a consumer or developer model.
+  , deviceAES    :: AES                       -- ^ AES decrypter for the device.
   , stateRef     :: IORef (Maybe EmotivState) -- ^ The EEG's cumulative state.
   } deriving (Generic)
 
@@ -395,9 +358,7 @@ openEmotivDevice model EmotivDeviceInfo{ hidapiDeviceInfo } = case hidapiDeviceI
                     stateRef <- newIORef Nothing
                     return $ EmotivDevice
                       { rawDevice   = HidapiDevice hidDev
-                      , serial      = s
-                      , stateRef    = stateRef
-                      , emotivModel = model
+                      , deviceAES   = serialToAES model s
                       }
 
 
@@ -415,9 +376,8 @@ openEmotivDeviceHandle model sn h = do
   stateRef <- newIORef Nothing
   return $ EmotivDevice
     { rawDevice   = HandleDevice h
-    , serial      = sn
+    , deviceAES   = serialToAES model sn
     , stateRef    = stateRef
-    , emotivModel = model
     }
 
 
@@ -428,7 +388,7 @@ openEmotivDeviceHandle model sn h = do
 -- Note that if the EEG is (turned) off, this function block until
 -- it is turned on again.
 readEmotivRaw :: EmotivDevice -> IO (Maybe EmotivRawData)
-readEmotivRaw EmotivDevice{ rawDevice, serial, emotivModel } = do
+readEmotivRaw EmotivDevice{ rawDevice, deviceAES } = do
 
   d32 <- case rawDevice of HidapiDevice d -> HID.read d 32
                            HandleDevice d -> BS.hGet d 32
@@ -436,7 +396,7 @@ readEmotivRaw EmotivDevice{ rawDevice, serial, emotivModel } = do
   -- If we get less than the requested 32 bytes, we're at EOF.
   return $ if BS.length d32 < 32
              then Nothing
-             else Just $ decrypt serial emotivModel d32
+             else Just $ decrypt deviceAES d32
 
 
 -- | Given a device and a Emotiv raw data, parses the raw data into an
