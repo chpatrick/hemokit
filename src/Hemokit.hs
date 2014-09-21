@@ -107,7 +107,7 @@ serialToAES model (SerialNumber num)
     where
       serialEnd = map (BS.index num) [ 15, 14, 13, 12 ]
       modelKey = case model of 
-        Consumer -> [ 0x00, 0x54, 0x10, 0x42, 0x00, 0x48, 0x00, 0x50 ]
+        Consumer  -> [ 0x00, 0x54, 0x10, 0x42, 0x00, 0x48, 0x00, 0x50 ]
         Developer -> [ 0x00, 0x48, 0x00, 0x54, 0x10, 0x42, 0x00, 0x50 ]
       -- alternate bytes from the serial and the model-specific key
       key = concat $ transpose [ serialEnd ++ serialEnd, modelKey ]
@@ -257,6 +257,7 @@ makeEmotivRawData bytes
 -- I improved the gyro like this:
 -- https://github.com/openyou/emokit/commit/b023a3c195410147dae44a3ce3a6d72f7c16e441
 
+-- | Parses an `EmotivPacket` from raw bytes.
 parsePacket :: EmotivRawData -> EmotivPacket
 parsePacket (EmotivRawData bytes32)
   = runGet packetParser $ fromStrict bytes32

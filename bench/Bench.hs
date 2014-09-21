@@ -11,10 +11,11 @@ import Hemokit
 main :: IO ()
 main = defaultMain
   [ bench "parsePacket" $ nf parsePacket rawPacket1
-  , bench "decrypt"     $ nf (decrypt _SERIAL Consumer) encryptedPacket1
+  , bench "decrypt"     $ nf (decrypt aes) encryptedPacket1
   ]
   where
     _SERIAL = fromJust $ makeSerialNumber "SN201211154288GM"
+    aes = serialToAES Consumer _SERIAL
 
     rawPacket1 = makeEmotivRawData "|\147~E\ETB\184\155\230y\185\247\249\&1@\NUL\NUL\STX\NUL\184\ACK\158ms\221\246\183\156\RSOgir"
 
