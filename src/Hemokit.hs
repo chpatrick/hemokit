@@ -103,14 +103,14 @@ makeSerialNumberFromString = makeSerialNumber . BS8.pack
 -- | Initialize an AES decrypter from a serial number.
 serialToAES :: EmotivModel -> SerialNumber -> AES
 serialToAES model (SerialNumber num)
-  = initAES $ BS.pack $ start ++ middle ++ end
+  = initAES $ BS.pack key
     where
-      sn = BS.index num
-      start = [ sn 15, 0, sn 14 ]
-      middle = case model of
-        Consumer ->  [ 0x54, sn 13, 0x10, sn 12, 0x42, sn 15, 0x00, sn 14, 0x48 ]
-        Developer -> [ 0x48,  0x0f, 0x00, sn 14, 0x54, sn 13, 0x10, sn 12, 0x42 ]
-      end = [ sn 13, 0, sn 12, 0x50 ]
+      serialEnd = map (BS.index num) [ 15, 14, 13, 12 ]
+      modelKey = case model of 
+        Consumer -> [ 0x00, 0x54, 0x10, 0x42, 0x00, 0x48, 0x00, 0x50 ]
+        Developer -> [ 0x00, 0x48, 0x00, 0x54, 0x10, 0x42, 0x00, 0x50 ]
+      -- alternate bytes from the serial and the model-specific key
+      key = concat $ transpose [ serialEnd ++ serialEnd, modelKey ]
 
 -- | Takes a 32 bytes encrypted EEG data, returns 32 bytes decrypted EEG data.
 decrypt :: AES -> ByteString -> EmotivRawData
@@ -261,18 +261,19 @@ parsePacket :: EmotivRawData -> EmotivPacket
 parsePacket (EmotivRawData bytes32)
   = runGet packetParser $ fromStrict bytes32
     where 
-      parse7levels = sequenceA . replicate 7 $ word16be 14
-      packetParser = runBitGet . block $
-        buildPacket <$>
-          bool <*> -- counter or battery indicator
-          word8 7 <*> -- counter or battery value
-          parse7levels <*> -- first seven levels
-          word32be 28 <*> -- quality
-          parse7levels <*> -- next seven levels
-          word16be 8 <*> -- top 8 bits of gyro X
-          word16be 8 <*> -- top 8 bits of gyro Y
-          word16be 4 <*> -- bottom 4 bits of gyro X
-          word16be 4     -- bottom 4 bits of gyro Y
+      sevenLevels = sequenceA . replicate 7 $ word16be 14
+      packetParser = runBitGet . block $ buildPacket
+        <$> bool          -- counter or battery indicator
+        <*> word8 7       -- counter or battery value
+        <*> sevenLevels   -- first seven signal levels
+        <*  bool          -- mystery bit
+        <*> word16be 14   -- signal quality
+        <*  word16be 13   -- more mystery bits
+        <*> sevenLevels   -- next seven signal levels
+        <*> word16be 8    -- 8 high bits of gyro X
+        <*> word16be 8    -- 8 high bits of gyro Y
+        <*> word16be 4    -- 4 low bits of gyro X
+        <*> word16be 4    -- 4 low bits of gyro Y
       buildPacket isBattery batteryCounter s1 q s2 hx hy lx ly
         = EmotivPacket
           { packetCounter = if isBattery then 128 else int batteryCounter
@@ -280,7 +281,7 @@ parsePacket (EmotivRawData bytes32)
           , packetGyroX = int (hx `shiftL` 4 .|. lx) - 1652 -- TODO check this hardcoding
           , packetGyroY = int (hy `shiftL` 4 .|. ly) - 1681
           , packetSensors = V.fromListN 14 $ map int (s1 ++ s2)
-          , packetQuality = ( , 0 ) <$> qualitySensorFromByte0 batteryCounter -- TODO: figure out quality
+          , packetQuality = ( , int q ) <$> qualitySensorFromByte0 batteryCounter
           }
 
 -- | The USB vendor ID of the Emotiv EPOC.
